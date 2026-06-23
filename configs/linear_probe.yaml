@@ -1,0 +1,61 @@
+# Linear probing: backbone frozen, only the classifier head is trained.
+data:
+  root: /data/seo_sunyong/workspace/data/cocone/UI/P1/style-classifier-dataset
+  train_csv: train.csv
+  val_csv: val.csv
+  image_column: input
+  label_column: class
+  num_classes: 4
+  class_names: [chic, feminine, lovely, other]
+  pad_to_square: true
+  pad_value: 255
+  to_rgb: true
+
+aug:
+  horizontal_flip: true
+  horizontal_flip_p: 0.5
+  coarse_dropout: true
+  coarse_dropout_p: 0.5
+  coarse_dropout_max_holes: 8
+  coarse_dropout_max_height_frac: 0.15
+  coarse_dropout_max_width_frac: 0.15
+  blur: true
+  blur_p: 0.2
+  blur_limit: 5
+  rotate: true
+  rotate_p: 0.5
+  rotate_limit: 20
+
+model:
+  backbone: wd-vit-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3
+  pretrained: true
+  head_dropout: 0.1
+  image_size: null             # null keeps backbone default (448)
+
+optim:
+  epochs: 500                  # hard cap; early stopping usually ends sooner
+  batch_size: 16
+  num_workers: 8
+  optimizer: adamw
+  lr: 1.0e-3                    # head LR (backbone is frozen here)
+  backbone_lr: 1.0e-5          # unused in linear_probe
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 2
+  min_lr: 1.0e-6
+  label_smoothing: 0.0
+  class_weighted_loss: true
+  weighted_sampler: false
+  amp: true
+  grad_clip_norm: 1.0
+
+run:
+  mode: linear_probe
+  seed: 42
+  deterministic: true
+  device: cuda
+  output_dir: runs/linear_probe_vit
+  monitor: macro_f1
+  early_stop_patience: 50      # stop if no new best for 50 epochs (0 disables)
+  save_last: true
+  log_interval: 10
