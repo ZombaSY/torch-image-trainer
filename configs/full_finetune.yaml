@@ -37,8 +37,8 @@ optim:
   batch_size: 16
   num_workers: 8
   optimizer: adamw
-  lr: 5.0e-5                    # head LR
-  backbone_lr: 1.0e-6          # lower LR for pretrained backbone
+  lr: 5.0e-4                    # head LR
+  backbone_lr: 1.0e-5          # lower LR for pretrained backbone
   weight_decay: 1.0e-4
   scheduler: cosine
   warmup_epochs: 10

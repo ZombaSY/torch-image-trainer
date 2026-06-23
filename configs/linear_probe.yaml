@@ -27,7 +27,7 @@ aug:
   rotate_limit: 20
 
 model:
-  backbone: wd-vit-large-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3
+  backbone: wd-vit-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3
   pretrained: true
   head_dropout: 0.1
   image_size: null             # null keeps backbone default (448)
@@ -37,7 +37,7 @@ optim:
   batch_size: 16
   num_workers: 8
   optimizer: adamw
-  lr: 1.0e-4                    # head LR (backbone is frozen here)
+  lr: 1.0e-3                    # head LR (backbone is frozen here)
   backbone_lr: 1.0e-6          # unused in linear_probe
   weight_decay: 1.0e-4
   scheduler: cosine
