@@ -27,21 +27,21 @@ aug:
   rotate_limit: 20
 
 model:
-  backbone: wd-vit-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3
+  backbone: wd-swinv2-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3
   pretrained: true
   head_dropout: 0.1
-  image_size: 512
+  image_size: null
 
 optim:
   epochs: 500                  # hard cap; early stopping usually ends sooner
   batch_size: 16
   num_workers: 8
   optimizer: adamw
-  lr: 5.0e-4                    # head LR
-  backbone_lr: 1.0e-5          # lower LR for pretrained backbone
+  lr: 5.0e-5                    # head LR
+  backbone_lr: 1.0e-6          # lower LR for pretrained backbone
   weight_decay: 1.0e-4
   scheduler: cosine
-  warmup_epochs: 3
+  warmup_epochs: 10
   min_lr: 1.0e-6
   label_smoothing: 0.1
   class_weighted_loss: true
