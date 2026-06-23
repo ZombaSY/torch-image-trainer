@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 import os
 import random
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
+
+
+def run_timestamp() -> str:
+    """Return the current local time as a ``yymmdd-hhmmss`` run name."""
+    return datetime.now().strftime("%y%m%d-%H%M%S")
 
 
 def set_seed(seed: int, deterministic: bool = True) -> None:

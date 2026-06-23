@@ -80,6 +80,7 @@ class Trainer:
         self.history: list[dict] = []
         self.best_metric = -math.inf
         self.best_epoch = -1
+        self.best_ckpt_path: Path | None = None
         # Epochs elapsed since the last improvement (drives early stopping).
         self.epochs_since_best = 0
 
@@ -142,7 +143,12 @@ class Trainer:
         return metrics
 
     # ---- checkpoints ------------------------------------------------------
-    def _save_checkpoint(self, name: str, epoch: int, metrics: dict) -> None:
+    def _ckpt_name(self, tag: str, epoch: int, metrics: dict) -> str:
+        """Build a filename that embeds the epoch and monitored metric score."""
+        monitor = self.cfg.run.monitor
+        return f"{tag}_e{epoch}_{monitor}{metrics[monitor]:.4f}.pt"
+
+    def _save_checkpoint(self, name: str, epoch: int, metrics: dict) -> Path:
         path = self.output_dir / name
         torch.save(
             {
@@ -153,6 +159,7 @@ class Trainer:
             },
             path,
         )
+        return path
 
     # ---- public API -------------------------------------------------------
     def fit(self, train_loader: DataLoader, val_loader: DataLoader) -> dict:
@@ -189,10 +196,15 @@ class Trainer:
                 self.best_metric = monitored
                 self.best_epoch = epoch
                 self.epochs_since_best = 0
-                self._save_checkpoint("best.pt", epoch, val_metrics)
+                # Drop the previous best (~hundreds of MB) before saving anew.
+                if self.best_ckpt_path is not None and self.best_ckpt_path.exists():
+                    self.best_ckpt_path.unlink()
+                self.best_ckpt_path = self._save_checkpoint(
+                    self._ckpt_name("best", epoch, val_metrics), epoch, val_metrics
+                )
                 self.logger.info(
-                    "new best %s=%.4f at epoch %d", self.cfg.run.monitor,
-                    monitored, epoch,
+                    "new best %s=%.4f at epoch %d -> %s", self.cfg.run.monitor,
+                    monitored, epoch, self.best_ckpt_path.name,
                 )
             else:
                 self.epochs_since_best += 1
@@ -208,7 +220,9 @@ class Trainer:
                 break
 
         if self.cfg.run.save_last:
-            self._save_checkpoint("last.pt", self.cfg.optim.epochs - 1, val_metrics)
+            self._save_checkpoint(
+                self._ckpt_name("last", epoch, val_metrics), epoch, val_metrics
+            )
 
         with open(self.output_dir / "history.json", "w") as fh:
             json.dump(self.history, fh, indent=2)
@@ -216,6 +230,7 @@ class Trainer:
         summary = {
             "best_epoch": self.best_epoch,
             f"best_{self.cfg.run.monitor}": round(self.best_metric, 4),
+            "best_checkpoint": self.best_ckpt_path.name if self.best_ckpt_path else None,
         }
         self.logger.info("Training complete | %s", summary)
         return summary

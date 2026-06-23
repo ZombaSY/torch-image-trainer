@@ -108,10 +108,13 @@ on a white background before resizing.
 
 ## Outputs
 
-Each run writes to `run.output_dir`:
+Each run writes to a timestamped subdirectory `run.output_dir/<yymmdd-hhmmss>`
+(e.g. `runs/linear_probe_vit/250623-121738/`):
 
 - `config.yaml` — exact resolved config (reproducibility snapshot)
-- `best.pt` / `last.pt` — checkpoints (`model_state`, `config`, `metrics`)
+- `best_e<epoch>_<metric><score>.pt` / `last_e<epoch>_<metric><score>.pt` —
+  checkpoints (`model_state`, `config`, `metrics`) with the score in the
+  filename, e.g. `best_e7_macro_f10.6445.pt`. Only the current best is kept.
 - `history.json` — per-epoch metrics
 - `train.log` — full training log
 

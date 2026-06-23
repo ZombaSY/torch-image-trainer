@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 
+from pathlib import Path
+
 from src.config import load_config, apply_overrides
 from src.dataset import build_dataloaders
 from src.model import build_model
 from src.trainer import Trainer
-from src.utils import set_seed
+from src.utils import run_timestamp, set_seed
 
 
 def parse_args() -> tuple[argparse.Namespace, dict]:
@@ -46,6 +48,10 @@ def main() -> None:
     cfg = load_config(args.config)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
+
+    # Save each run into a timestamped subdir: <output_dir>/<yymmdd-hhmmss>.
+    run_dir = str(Path(cfg.run.output_dir) / run_timestamp())
+    cfg = apply_overrides(cfg, {"run.output_dir": run_dir})
 
     set_seed(cfg.run.seed, cfg.run.deterministic)
 
