@@ -6,7 +6,7 @@ data:
   image_column: input
   label_column: class
   num_classes: 3
-  class_names: [chic, feminine, lovely, other]
+  class_names: [chic, feminine, lovely]
   pad_to_square: true
   pad_value: 255
   to_rgb: true
