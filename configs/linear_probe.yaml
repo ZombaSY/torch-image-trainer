@@ -25,6 +25,13 @@ aug:
   rotate: true
   rotate_p: 0.5
   rotate_limit: 20
+  mixup: true
+  mixup_alpha: 0.2
+  cutmix: true
+  cutmix_alpha: 1.0
+  mix_p: 0.5
+  mix_switch_prob: 0.5
+  mix_min_ratio: 0.3
 
 model:
   backbone: wd-vit-tagger-v3   # wd-swinv2-tagger-v3 | wd-vit-large-tagger-v3 | wd-vit-tagger-v3

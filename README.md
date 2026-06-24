@@ -107,12 +107,29 @@ preprocessing automatically — no need to pass the original YAML.
 
 ## Augmentations (train split only)
 
-Exactly the four requested, all toggleable in the `aug:` config block:
+All toggleable in the `aug:` config block.
+
+Per-sample (albumentations):
 
 - Horizontal flip (`A.HorizontalFlip`)
 - Coarse dropout (`A.CoarseDropout`)
 - Blur (`A.Blur`)
 - Rotate (`A.Rotate`)
+
+Batch-level (`src/mixaug.py`, applied in the training loop):
+
+- **MixUp** — blends two images by a `Beta(mixup_alpha, mixup_alpha)` ratio.
+- **CutMix** — pastes a random patch from one image onto another.
+
+The ground-truth label is split by the same ratio used to mix the pixels:
+MixUp uses its blend ratio, CutMix uses the **actual pasted-patch area**
+(recomputed after edge clipping). The split is folded into the loss as
+`lam·loss(·, y) + (1−lam)·loss(·, y_perm)`, preserving class weights and label
+smoothing. `mix_p` sets the per-batch chance of mixing; with both enabled,
+`mix_switch_prob` picks CutMix over MixUp. The ratio is clamped to
+`[mix_min_ratio, 1 − mix_min_ratio]` (default `[0.3, 0.7]`) so neither source
+ever dominates; CutMix places its patch fully in-frame so this floor survives
+near the edges.
 
 Both splits share the resize → normalize tail. Input is **448×448**, normalized
 with mean/std `0.5` (the WD tagger preprocessing); images are padded to a square

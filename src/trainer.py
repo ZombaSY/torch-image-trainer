@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 
 from .config import Config
 from .dataset import class_weights
+from .mixaug import MixAug, mix_loss
 from .model import StyleClassifier, build_param_groups, count_trainable_params
 from .utils import classification_metrics, get_logger
 
@@ -69,6 +70,8 @@ class Trainer:
         self.criterion = nn.CrossEntropyLoss(
             weight=weight, label_smoothing=cfg.optim.label_smoothing
         )
+        # MixUp/CutMix mix batches and split the label into the loss below.
+        self.mixaug = MixAug(cfg.aug)
 
         self.optimizer = _build_optimizer(model, cfg)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -95,11 +98,12 @@ class Trainer:
         for step, (images, labels) in enumerate(loader):
             images = images.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
+            mixed = self.mixaug(images, labels)
 
             self.optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=self.use_amp):
-                logits = self.model(images)
-                loss = self.criterion(logits, labels)
+                logits = self.model(mixed.images)
+                loss = mix_loss(self.criterion, logits, mixed)
 
             self.scaler.scale(loss).backward()
             if self.cfg.optim.grad_clip_norm > 0:

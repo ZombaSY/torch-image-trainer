@@ -47,10 +47,11 @@ class DataConfig:
 
 @dataclass
 class AugConfig:
-    """Albumentations augmentation switches (train split only).
+    """Augmentation switches (train split only).
 
-    Only the four augmentations requested are wired in: horizontal flip,
-    coarse dropout, blur, and rotate.
+    Per-sample albumentations ops (horizontal flip, coarse dropout, blur,
+    rotate) plus the batch-level mixing augmentations (MixUp, CutMix) applied
+    in the training loop.
     """
 
     horizontal_flip: bool = True
@@ -69,6 +70,23 @@ class AugConfig:
     rotate: bool = True
     rotate_p: float = 0.5
     rotate_limit: int = 20
+
+    # Batch-level mixing (applied in the trainer, not albumentations). The
+    # ground-truth label is split by the same ratio used to mix the pixels:
+    # CutMix uses the true pasted-patch area, MixUp uses its blend ratio.
+    mixup: bool = False
+    mixup_alpha: float = 0.2          # Beta(alpha, alpha); higher -> stronger
+
+    cutmix: bool = False
+    cutmix_alpha: float = 1.0
+
+    # Probability of mixing a given batch, and (when both are on) the chance
+    # of picking CutMix over MixUp.
+    mix_p: float = 0.5
+    mix_switch_prob: float = 0.5
+    # Floor on each source's share, so the ratio stays in
+    # [mix_min_ratio, 1 - mix_min_ratio] (default [0.3, 0.7]).
+    mix_min_ratio: float = 0.3
 
 
 @dataclass
