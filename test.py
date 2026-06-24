@@ -27,7 +27,7 @@ import pandas as pd
 import torch
 
 from src.config import from_dict
-from src.dataset import build_transforms, load_image
+from src.dataset import build_transforms, load_image  # load_image: shared read/composite
 from src.model import build_model
 from src.utils import classification_metrics, get_logger
 
@@ -100,10 +100,19 @@ def predict(model, cfg, transform, device, root, rel_paths, batch_size):
     return preds, np.asarray(probs)
 
 
-def annotate(src_path: Path, dst_path: Path, text: str) -> None:
-    """Draw a labeled banner with the predicted class onto a copy of the image."""
-    image = cv2.imread(str(src_path), cv2.IMREAD_COLOR)
-    if image is None:
+def annotate(src_path: Path, dst_path: Path, text: str, cfg) -> None:
+    """Draw a labeled banner with the predicted class onto a copy of the image.
+
+    Reuses ``load_image`` so the saved preview reflects exactly what the model
+    ingested (alpha composited onto the pad background, padded to square). Reads
+    as BGR (``to_rgb=False``) so cv2's drawing and ``imwrite`` colors stay correct.
+    """
+    try:
+        image = load_image(
+            src_path, to_rgb=False,
+            pad_square=cfg.data.pad_to_square, pad_value=cfg.data.pad_value,
+        )
+    except FileNotFoundError:
         return
     h, w = image.shape[:2]
     scale = max(0.6, w / 900)
@@ -188,7 +197,7 @@ def main() -> None:
                 label += f" (gt:{out['true_name'][i]})"
             # Flatten relative path so nested dirs do not collide.
             flat = rel.replace("/", "__")
-            annotate(root / rel, img_dir / flat, label)
+            annotate(root / rel, img_dir / flat, label, cfg)
         logger.info("Wrote %d annotated images: %s", len(rel_paths), img_dir)
 
 

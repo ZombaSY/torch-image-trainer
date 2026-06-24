@@ -40,17 +40,41 @@ def pad_to_square(image: np.ndarray, value: int) -> np.ndarray:
     )
 
 
+def flatten_alpha(image: np.ndarray, value: int) -> np.ndarray:
+    """Flatten a raw cv2 read onto a constant background, returning BGR uint8.
+
+    Accepts the ``cv2.IMREAD_UNCHANGED`` result (grayscale, BGR, or BGRA) and
+    alpha-composites transparent pixels onto a solid ``value`` background. This
+    matters because the WD taggers expect a white background: dropping the
+    alpha channel (as ``IMREAD_COLOR`` does) leaks whatever arbitrary RGB sits
+    under transparent pixels, which shows up as a "splatted" background.
+    """
+    if image.ndim == 2:  # grayscale
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    channels = image.shape[2]
+    if channels == 3:
+        return image
+    if channels == 4:
+        bgr = image[:, :, :3].astype(np.float32)
+        alpha = (image[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+        composited = bgr * alpha + value * (1.0 - alpha)
+        return composited.round().astype(np.uint8)
+    raise ValueError(f"Unsupported channel count {channels} for image")
+
+
 def load_image(
     path: str | Path, to_rgb: bool, pad_square: bool, pad_value: int
 ) -> np.ndarray:
     """Read an image with cv2 and apply the shared preprocessing.
 
     Returns an HxWx3 uint8 array (RGB if ``to_rgb`` else BGR). Centralized so
-    training and inference use identical preprocessing.
+    training and inference use identical preprocessing. Reads unchanged so the
+    alpha channel can be composited onto ``pad_value`` rather than discarded.
     """
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)  # BGR, drops alpha
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise FileNotFoundError(f"Could not read image: {path}")
+    image = flatten_alpha(image, pad_value)  # BGR uint8, transparency on bg
     if to_rgb:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     if pad_square:
