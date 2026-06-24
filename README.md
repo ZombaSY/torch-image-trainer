@@ -83,6 +83,18 @@ python test.py --checkpoint runs/full_finetune_vit/best.pt \
     --csv /path/to/test.csv --output-dir runs/full_finetune_vit/test
 ```
 
+Flags:
+
+| flag | default | meaning |
+|------|---------|---------|
+| `--checkpoint` | _(required)_ | Path to a `.pt` checkpoint (embeds its own config). |
+| `--csv` | config's `val.csv` | CSV of images to score. |
+| `--data-root` | config's `data.root` | Root the CSV paths are relative to. |
+| `--output-dir` | `<checkpoint_dir>/test` | Where outputs are written. |
+| `--batch-size` | `16` | Inference batch size. |
+| `--save-images` | off | Also save each image annotated with the prediction. |
+| `--device` | `cuda` | `cuda` or `cpu` (falls back to `cpu` if no GPU). |
+
 Writes to `--output-dir` (defaults to `<checkpoint_dir>/test`):
 
 - `predictions.csv` — per image: predicted class/name, confidence, per-class
