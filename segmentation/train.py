@@ -1,12 +1,16 @@
 #!/usr/bin/env python
-"""Training entrypoint for the segmentation trainer. **PLACEHOLDER.**
+"""Entrypoint for training the alpha-matte segmentation model.
 
-Declarative, exactly like ``../classification/train.py``: parse args, load +
-override config, timestamp the run dir, seed, build model (which dictates
-preprocessing), build dataloaders to match, then ``Trainer(...).fit(...)``.
+Examples
+--------
+Decoder-only (backbone frozen) with the EVA-02 + DPT config::
 
-    python train.py --config configs/unet.yaml
-    python train.py --config configs/unet.yaml optim.lr=5e-4 model.encoder=resnet50
+    python train.py --config configs/eva02_dpt.yaml
+
+Full fine-tuning of Swin-L + UPerHead, overriding a couple of fields::
+
+    python train.py --config configs/swin_uper.yaml \
+        run.mode=full_finetune optim.epochs=200
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from src.utils import run_timestamp, set_seed
 
 
 def parse_args() -> tuple[argparse.Namespace, dict]:
-    parser = argparse.ArgumentParser(description="Train the segmentation model.")
+    parser = argparse.ArgumentParser(description="Train the alpha-matte segmentation model.")
     parser.add_argument("--config", required=True, help="Path to a YAML config file.")
     parser.add_argument(
         "overrides", nargs="*",
@@ -39,12 +43,32 @@ def parse_args() -> tuple[argparse.Namespace, dict]:
 
 
 def main() -> None:
-    # Structure mirrors classification/train.py — see it for the reference flow.
-    raise NotImplementedError(
-        "Wire up like classification/train.py: load_config -> apply_overrides -> "
-        "timestamped run.output_dir -> set_seed -> build_model (gives data_config) "
-        "-> build_dataloaders(mean/std/image_size from data_config) -> Trainer.fit."
+    args, overrides = parse_args()
+    cfg = load_config(args.config)
+    if overrides:
+        cfg = apply_overrides(cfg, overrides)
+
+    # Save each run into a timestamped subdir: <output_dir>/<yymmdd-hhmmss>.
+    run_dir = str(Path(cfg.run.output_dir) / run_timestamp())
+    cfg = apply_overrides(cfg, {"run.output_dir": run_dir})
+
+    set_seed(cfg.run.seed, cfg.run.deterministic)
+
+    # Backbone first: it dictates the input size and normalization the
+    # dataloader must match.
+    model, data_config = build_model(cfg)
+    image_size = data_config["input_size"]
+    mean = tuple(data_config["mean"])
+    std = tuple(data_config["std"])
+
+    train_loader, val_loader, train_ds = build_dataloaders(cfg, mean, std, image_size)
+
+    trainer = Trainer(model, cfg)
+    trainer.logger.info(
+        "Input %dx%d | mean %s | std %s | train %d / val %d images",
+        image_size, image_size, mean, std, len(train_ds), len(val_loader.dataset),
     )
+    trainer.fit(train_loader, val_loader)
 
 
 if __name__ == "__main__":

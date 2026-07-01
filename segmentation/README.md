@@ -1,83 +1,144 @@
-# Semantic Segmentation Trainer — placeholder
+# Alpha-Matte Segmentation Trainer
 
-> **Status: scaffold only.** Every module here is a stub that raises
-> `NotImplementedError`. It mirrors the structure of the sibling
-> [`../classification`](../classification) trainer so the two share the same
-> design contracts. Fill the stubs in following the pattern described below.
+Fine-tunes a pretrained vision backbone into a **dense alpha-matte regressor**:
+given an RGB composite of a logo, predict the logo's alpha channel. It follows
+the same design as the sibling [`../classification`](../classification) trainer
+(typed config, config-embedded checkpoints, backbone-driven preprocessing,
+timestamped runs) — see the blueprint skill at
+`.claude/skills/pytorch-image-trainer-blueprint/`.
 
-This trainer fine-tunes a pretrained encoder into a dense (per-pixel) semantic
-segmentation model. It deliberately reuses the architecture of the
-classification trainer — see the repo's blueprint skill at
-`.claude/skills/pytorch-image-trainer-blueprint/` for the full rationale.
+## Why regression, not class segmentation
 
-## Layout (same shape as classification)
+The dataset's masks are the logos' **alpha channels** (a continuous 0–255
+matte), so the target has no class axis. The model outputs a single-channel
+alpha in `[0, 1]` (sigmoid) and is trained with a **pixel distance** (L1 by
+default), exactly like an image-to-image generation task — not a per-class
+cross-entropy.
+
+## Backbones × heads
+
+| Backbone (`model.backbone`) | Family | Head | Source |
+|-----------------------------|--------|------|--------|
+| `eva02-l` (EVA-02-L) | non-hierarchical ViT | **DPT** | timm |
+| `dinov2-l` (DINOv2-L, stands in for DINOv3) | non-hierarchical ViT | **DPT** | transformers |
+| `swinv2-l` (Swin-L-v2) | hierarchical | **UPerHead** | timm |
+| `internimage-l` (InternImage-L) | hierarchical | **UPerHead** | OpenGVLab (HF `trust_remote_code`) |
+
+The head is auto-selected from the backbone family (DPT for ViTs, UPerHead for
+hierarchical pyramids); override with `model.head` if needed. **All four run out
+of the box** (verified on GPU 0): `eva02-l`/`swinv2-l` via timm, `dinov2-l` via
+`transformers`, and `internimage-l` via `transformers` `trust_remote_code` —
+its remote code ships a pure-PyTorch DCNv3 fallback, so no custom CUDA op build
+is needed (compiling OpenGVLab's op is optional, just faster).
+
+> DINOv3 was requested but isn't accessible here, so `dinov2-l`
+> (`facebook/dinov2-large`) stands in — same ViT-L + DPT wiring; swap the
+> `model_id` in `src/config.py` when DINOv3 becomes available.
+
+## Layout
 
 ```
-configs/         # one YAML per regime (unet.yaml, ...)
+configs/         eva02_dpt.yaml  dinov2_dpt.yaml  swin_uper.yaml  internimage_uper.yaml
 src/
-  config.py      # typed dataclass config + YAML loader + CLI overrides + validate()
-  dataset.py     # image+mask read/preprocess, transforms, Dataset, dataloaders
-  model.py       # build encoder+decoder (e.g. U-Net/DeepLab), freeze logic, param groups
-  trainer.py     # train/val loop, AMP, scheduler, IoU/Dice-based checkpointing, early stop
-  utils.py       # seeding, logging, segmentation metrics (IoU/Dice)
-train.py         # training entrypoint
-test.py          # inference entrypoint (load ckpt -> predict masks -> write outputs)
+  config.py      typed config + backbone registry + YAML/CLI overrides
+  dataset.py     RGBA read/composite, random-bg aug, image+mask transforms
+  backbones.py   4 backbone adapters -> uniform multi-scale features
+  heads.py       DPTHead (ViT) + UPerHead (hierarchical)
+  model.py       backbone + head + shared 1-ch matte conv (sigmoid)
+  losses.py      pixel distance (l1 | mse | l1_mse)
+  trainer.py     train/val loop, AMP, cosine warmup, MAE-based checkpointing
+  utils.py       seeding, logging, matting metrics (MAE/MSE)
+train.py         training entrypoint
+test.py          inference: predict mattes + MAE/MSE
 ```
 
-## The five contracts (carried over from classification)
+## Usage
 
-The load-bearing decisions are identical; only the task-specific pieces change.
-Read `../classification/src/*.py` for the concrete reference implementation.
+Pick GPU 0 (others may be busy) and run from this directory:
 
-1. **One typed `Config` fully describes a run.** Same machinery
-   (`load_config` / `validate` / `from_dict` / dotted CLI overrides / unknown-key
-   rejection). The `_build_section` / `from_dict` / `apply_overrides` / `_coerce`
-   helpers are **identical** to `../classification/src/config.py` — copy them
-   verbatim. Only the section dataclasses differ (mask paths instead of a label
-   column; `monitor` becomes `mean_iou` / `dice`; no MixUp/CutMix by default).
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/eva02_dpt.yaml
 
-2. **Checkpoints embed their own config** — `{epoch, model_state, config,
-   metrics}`, rebuilt at inference via `from_dict`. Unchanged from classification.
+# Override any leaf field as section.field=value (e.g. shorter warmup for the
+# tiny dataset, smaller batch to fit one GPU)
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/swin_uper.yaml \
+    optim.warmup_iters=200 optim.batch_size=4
 
-3. **The encoder dictates preprocessing** — build the model first, derive input
-   size / mean / std from the encoder (`timm.data.resolve_model_data_config`, or
-   `smp.encoders.get_preprocessing_params`), and match it in the dataloader.
+# Score the val split from a checkpoint (embeds its own config)
+CUDA_VISIBLE_DEVICES=0 python test.py --checkpoint runs/eva02_dpt/<ts>/best.pt
+```
 
-4. **One shared image+mask read for train AND inference.** *This is the main
-   segmentation-specific change.* The mask must receive the **same geometric
-   transforms** as the image (resize, flip, rotate, crop) but must **not** be
-   normalized — it stays an integer label map. Pass both through one
-   albumentations `Compose` call: `transform(image=img, mask=msk)`. Normalize +
-   `ToTensorV2` affect only the image; the mask becomes a `long` tensor of class
-   indices. Keep this in one place so train/inference geometry can't diverge.
+## Learning-rate recipes (paper-faithful)
 
-5. **Every run is a timestamped, self-documenting directory** — `config.yaml`
-   snapshot, `best_e<epoch>_<metric><score>.pt`, `history.json`, `train.log`.
-   Unchanged. `monitor` is `mean_iou` (or `dice`) instead of `macro_f1`.
+Each config mirrors that backbone's **official semantic-segmentation** recipe
+(UPerNet/DPT on ADE20K), not a generic default — LR, weight decay, layer-wise LR
+decay (LLRD), stochastic depth, grad-clip, and freeze mode all follow the source:
 
-## What differs from classification
+| Backbone | LR | Weight decay | Layer-wise LR decay | drop_path | Mode | Source |
+|---|---|---|---|---|---|---|
+| `swinv2-l` | 6e-5 (single) | 0.01 | none (no-decay on norm/pos-embed/rel-pos-bias) | 0.3 | full_finetune | Swin / mmseg UPerNet |
+| `eva02-l` | 4e-5 | 0.05 | **0.9** (24 blocks) | 0.2 | full_finetune | baaivision/EVA UPerNet |
+| `internimage-l` | 2e-5 | 0.05 | **0.94** (37 layers) + grad-clip 0.1 | (HF default) | full_finetune | OpenGVLab UPerNet |
+| `dinov2-l` | 4e-5 | 0.05 | **0.9** | 0.2 | full_finetune | *adapted* from EVA-02-L — DINOv2 has no official seg fine-tune recipe (its released one freezes the backbone) |
 
-| Concern | Classification | Segmentation |
-|---------|----------------|--------------|
-| Target | one class index per image | an `H×W` integer mask per image |
-| Head | `Dropout → Linear` on pooled features | decoder (U-Net/FPN/DeepLabV3+) on feature maps |
-| Loss | `CrossEntropyLoss` over logits | pixel `CrossEntropyLoss` (optionally + Dice); `ignore_index` for void |
-| Metric | accuracy, macro-F1 | per-class IoU + mean IoU, Dice |
-| Batch aug | MixUp/CutMix (label-split at loss) | usually omitted — mixing masks is mask-aware and tricky; leave out unless justified |
-| Preprocessing | resize/normalize image only | same geometric aug applied to **image and mask**; normalize image only |
+All use AdamW, **poly** decay (`power=1.0`), and a **1500-iter linear warmup**
+(`warmup_ratio=1e-6`). LLRD is implemented in `src/optim.py`: backbone layer `i`
+gets `lr · layer_decay**(num_layers − layer_id)`; norms/biases/embeddings get
+`weight_decay=0`. DINOv2 is the exception: it has no official end-to-end seg
+recipe (the released one freezes the backbone), so its config full-finetunes
+with a recipe adapted from the EVA-02-L ViT-L analog. To reproduce DINOv2's
+official frozen setup instead, run with `run.mode=decoder_only optim.lr=1e-3
+optim.weight_decay=1e-4 optim.layer_decay=1.0`.
 
-## Suggested extra dependency
+> **Caveats for this dataset.** These are ADE20K recipes (20k images, batch 16,
+> 40k–160k iters). Your set is ~90 images, so: (1) `warmup_iters=1500` is a large
+> fraction of a short run — consider lowering it; (2) the poly schedule spans the
+> *actual* run length (`epochs × iters/epoch`), so the LR *shape* is faithful even
+> though absolute iteration counts differ; (3) batch 8 on one GPU is smaller than
+> the papers' effective 16 — lower `optim.batch_size` if you hit OOM on
+> full-finetune. The LR *values* follow the papers; treat them as a strong
+> starting point, not a guarantee for a tiny regression task.
 
-`segmentation-models-pytorch` gives U-Net / FPN / DeepLabV3+ decoders on top of
-`timm` encoders, so contract #3 (encoder-driven preprocessing) still holds. See
-`requirements.txt`.
+## Augmentation
 
-## Getting started
+Strong on purpose — the dataset is tiny (~90 train / 22 val). Matches the
+classification per-sample ops (horizontal flip, rotate, blur, coarse dropout)
+**minus** MixUp/CutMix, **plus**:
 
-1. Copy the config machinery from `../classification/src/config.py`; keep the
-   section dataclasses defined here.
-2. Implement `src/dataset.py` first (contract #4 — the image+mask transform is
-   the part most different from classification).
-3. Implement `src/model.py` (encoder + decoder), then `src/trainer.py` (reuse
-   the classification loop; swap the criterion and metric).
-4. Wire `train.py` / `test.py` exactly like their classification counterparts.
+- **Vertical flip** and **color jitter** (photometric, image only).
+- **Random-background compositing** — composite the logo onto a random solid
+  color (else white) so the model learns alpha independent of background. The
+  target matte is unchanged; this is the key matting robustness aug.
+
+Geometric ops apply to image **and** mask; photometric ops to the image only.
+
+### Unpremultiply
+
+`data.unpremultiply_alpha` recovers straight color (`rgb / alpha`) before
+compositing, for *premultiplied* source assets. These logos look mostly
+**straight-alpha** in spot checks, where unpremultiply over-brightens edges — set
+it to `false` if predicted/observed mattes look wrong around edges.
+
+## Logging (Weights & Biases)
+
+Off by default. Enable per config or on the CLI:
+
+```bash
+wandb login   # once
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/eva02_dpt.yaml \
+    wandb.enabled=true wandb.project=my-matting wandb.mode=online
+```
+
+It logs the **run configuration** (once) and **per-epoch training states**
+(train/val loss, MAE/MSE, LR). It deliberately **excludes large data** — no model
+weights and no images are ever uploaded (no `wandb.save` of checkpoints, no
+image logging). Configure under the `wandb:` block (`enabled`, `project`,
+`entity`, `run_name`, `mode` = online/offline/disabled, `tags`). Requires
+`pip install wandb`; if `enabled=true` without it installed, the run errors
+clearly. W&B's local files are written inside the run directory (gitignored).
+
+## Outputs
+
+Each run writes `runs/<name>/<yymmdd-hhmmss>/`: `config.yaml` (snapshot),
+`best_e<epoch>_mae<score>.pt` / `last_...pt` (checkpoints embed model+config+metrics),
+`history.json`, `train.log`. Best checkpoint = lowest val MAE (`run.monitor`).
