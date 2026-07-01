@@ -63,6 +63,6 @@ run:
   device: cuda
   output_dir: runs/full_finetune_vit
   monitor: macro_f1
-  early_stop_patience: 50      # stop if no new best for 50 epochs (0 disables)
+  early_stop_patience: 200      # stop if no new best for 50 epochs (0 disables)
   save_last: true
   log_interval: 10
