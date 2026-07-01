@@ -88,8 +88,9 @@ class AugConfig:
 
     Geometric ops (flips, rotate) are applied to the image AND the mask
     together; photometric ops (color jitter, blur, coarse dropout) touch only
-    the image. Batch-level mixing (MixUp/CutMix) is deliberately absent: blending
-    two mattes is ill-defined for this regression target.
+    the image. CutMix (below) runs first, before any of these. MixUp is absent:
+    blending two mattes is ill-defined for this regression target, whereas
+    CutMix cut-pastes a patch on both image and mask, keeping the matte exact.
     """
 
     horizontal_flip: bool = True
@@ -127,6 +128,15 @@ class AugConfig:
     # albumentations. The target matte is unchanged.
     random_background: bool = True
     random_background_p: float = 0.5
+
+    # CutMix — paste a rectangular patch from another sample onto this one, on
+    # both the image AND its matte (dense target -> no label mixing needed).
+    # Applied FIRST, before every other augmentation, so the mixed image+mask is
+    # then flipped/rotated/jittered as one coherent sample. Box size ~ (1 - lam),
+    # lam ~ Beta(alpha, alpha).
+    cutmix: bool = True
+    cutmix_alpha: float = 1.0
+    cutmix_p: float = 0.5
 
 
 @dataclass

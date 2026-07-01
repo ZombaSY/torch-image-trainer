@@ -165,6 +165,38 @@ def build_transforms(
     return A.Compose(ops)
 
 
+def cutmix_pair(
+    image_a: np.ndarray, mask_a: np.ndarray,
+    image_b: np.ndarray, mask_b: np.ndarray, alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Paste a random patch from sample B onto A, on the image AND the matte.
+
+    For a dense regression target there is no label to mix — cutting the same
+    box on the matte keeps it pixel-exact. B is resized to A's size first so the
+    patch lines up. The box covers ~``(1 - lam)`` of the area with
+    ``lam ~ Beta(alpha, alpha)`` and is placed fully in-frame. Returns modified
+    copies (the inputs are not mutated).
+    """
+    h, w = image_a.shape[:2]
+    if image_b.shape[:2] != (h, w):
+        image_b = cv2.resize(image_b, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask_b = cv2.resize(mask_b, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    lam = float(np.random.beta(alpha, alpha)) if alpha > 0 else 0.5
+    cut_h = min(int(round(h * np.sqrt(1.0 - lam))), h)
+    cut_w = min(int(round(w * np.sqrt(1.0 - lam))), w)
+    if cut_h == 0 or cut_w == 0:
+        return image_a, mask_a
+    y1 = int(np.random.randint(0, h - cut_h + 1))
+    x1 = int(np.random.randint(0, w - cut_w + 1))
+
+    image = image_a.copy()
+    mask = mask_a.copy()
+    image[y1:y1 + cut_h, x1:x1 + cut_w] = image_b[y1:y1 + cut_h, x1:x1 + cut_w]
+    mask[y1:y1 + cut_h, x1:x1 + cut_w] = mask_b[y1:y1 + cut_h, x1:x1 + cut_w]
+    return image, mask
+
+
 class MatteDataset(Dataset):
     """CSV-driven alpha-matte dataset.
 
@@ -200,13 +232,28 @@ class MatteDataset(Dataset):
             return [int(c) for c in np.random.randint(0, 256, size=3)]
         return [self.cfg.pad_value] * 3
 
-    def __getitem__(self, idx: int):
+    def _load_raw(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Composited RGB input + alpha matte at padded-square size (pre-aug)."""
         bg = self._sample_background()
         image = load_image(
             self.root / self.images[idx], bg,
             self.cfg.to_rgb, self.cfg.pad_to_square, self.cfg.unpremultiply_alpha,
         )
         mask = load_mask(self.root / self.masks[idx], self.cfg.pad_to_square, self.cfg.mask_pad_value)
+        return image, mask
+
+    def __getitem__(self, idx: int):
+        image, mask = self._load_raw(idx)
+
+        # CutMix FIRST, before the albumentations pipeline, so the mixed
+        # image+mask is then augmented as one coherent sample.
+        if (
+            self.train and self.aug.cutmix
+            and float(np.random.rand()) < self.aug.cutmix_p
+        ):
+            j = int(np.random.randint(len(self.images)))
+            image_b, mask_b = self._load_raw(j)
+            image, mask = cutmix_pair(image, mask, image_b, mask_b, self.aug.cutmix_alpha)
 
         out = self.transform(image=image, mask=mask)
         image_t = out["image"]

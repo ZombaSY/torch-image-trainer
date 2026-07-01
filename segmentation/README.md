@@ -109,6 +109,11 @@ classification per-sample ops (horizontal flip, rotate, blur, coarse dropout)
 - **Random-background compositing** — composite the logo onto a random solid
   color (else white) so the model learns alpha independent of background. The
   target matte is unchanged; this is the key matting robustness aug.
+- **CutMix** — paste a rectangular patch from another sample onto both the
+  image and its matte. Because the target is dense, the matte is cut identically
+  (no label-mixing ratio, unlike classification CutMix). It runs **first**, at
+  the raw-sample level **before every other augmentation**, so the mixed
+  image+mask is then flipped/rotated/jittered as one coherent sample.
 
 Geometric ops apply to image **and** mask; photometric ops to the image only.
 

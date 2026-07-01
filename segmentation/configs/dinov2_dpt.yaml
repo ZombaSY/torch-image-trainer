@@ -39,6 +39,9 @@ aug:
   color_jitter_hue: 0.1
   random_background: true
   random_background_p: 0.5
+  cutmix: true                   # cut-paste patch on image+mask, before other aug
+  cutmix_alpha: 1.0
+  cutmix_p: 0.5
 
 model:
   backbone: dinov2-l
@@ -50,7 +53,7 @@ model:
   image_size: null
 
 optim:
-  epochs: 300
+  epochs: 10000
   batch_size: 8
   num_workers: 8
   optimizer: adamw
@@ -74,7 +77,7 @@ run:
   deterministic: true
   device: cuda
   monitor: mae
-  early_stop_patience: 50
+  early_stop_patience: 200
   save_last: true
   log_interval: 10
   output_dir: runs/dinov2_dpt
