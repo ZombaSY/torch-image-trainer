@@ -1,0 +1,60 @@
+# PLACEHOLDER — U-Net segmentation config sketch.
+# Mirrors ../../classification/configs/linear_probe.yaml. Adjust paths/classes
+# to your dataset, then implement src/ (every module currently raises
+# NotImplementedError). "decoder_only" freezes the encoder like linear_probe.
+
+data:
+  root: /path/to/segmentation-dataset
+  train_csv: train.csv            # columns: image, mask
+  val_csv: val.csv
+  image_column: image
+  mask_column: mask
+  num_classes: 2
+  class_names: [background, foreground]
+  ignore_index: 255               # void/pad pixels excluded from loss + metrics
+  pad_to_square: true
+  pad_value: 255
+  to_rgb: true
+
+aug:
+  horizontal_flip: true           # geometric: applied to image AND mask
+  horizontal_flip_p: 0.5
+  rotate: true
+  rotate_p: 0.5
+  rotate_limit: 20
+  blur: false                     # photometric: image only
+  blur_p: 0.2
+  blur_limit: 5
+
+model:
+  encoder: resnet50               # a timm encoder supported by segmentation-models-pytorch
+  decoder: unet                   # unet | fpn | deeplabv3plus
+  pretrained: true
+  image_size: null                # null keeps the encoder default
+
+optim:
+  epochs: 100
+  batch_size: 8
+  num_workers: 8
+  optimizer: adamw
+  lr: 1.0e-3                      # decoder LR
+  backbone_lr: 1.0e-5             # encoder LR (used only in full_finetune)
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 2
+  min_lr: 1.0e-6
+  loss: ce                        # ce | dice | ce_dice
+  class_weighted_loss: true
+  amp: true
+  grad_clip_norm: 1.0
+
+run:
+  mode: decoder_only              # decoder_only (encoder frozen) | full_finetune
+  seed: 42
+  deterministic: true
+  device: cuda
+  output_dir: runs/unet
+  monitor: mean_iou               # mean_iou | dice
+  early_stop_patience: 50
+  save_last: true
+  log_interval: 10
