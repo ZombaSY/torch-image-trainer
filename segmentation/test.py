@@ -42,8 +42,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", default=None, help="Override the dataset root.")
     parser.add_argument("--output-dir", default=None, help="Defaults to <checkpoint_dir>/test.")
     parser.add_argument("--batch-size", type=int, default=8, help="Inference batch size.")
+    parser.add_argument(
+        "--save-comparison", action="store_true",
+        help="Save per-image [input | prediction | ground truth] panels (needs labels).",
+    )
     parser.add_argument("--device", default="cuda", help="cuda or cpu.")
     return parser.parse_args()
+
+
+def _label(img: np.ndarray, text: str) -> np.ndarray:
+    """Draw a small caption in the top-left corner (in place) and return it."""
+    cv2.putText(img, text, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(img, text, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1, cv2.LINE_AA)
+    return img
+
+
+def comparison_panel(input_rgb: np.ndarray, pred_alpha: np.ndarray, gt_gray: np.ndarray) -> np.ndarray:
+    """[input | prediction | ground truth] side-by-side, all at the pred size."""
+    size = pred_alpha.shape[0]
+    inp = cv2.cvtColor(cv2.resize(input_rgb, (size, size)), cv2.COLOR_RGB2BGR)
+    pred3 = cv2.cvtColor(np.round(pred_alpha * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    gt3 = cv2.cvtColor(cv2.resize(gt_gray, (size, size), interpolation=cv2.INTER_NEAREST), cv2.COLOR_GRAY2BGR)
+    sep = np.full((size, 4, 3), 255, np.uint8)
+    return cv2.hconcat([_label(inp, "input"), sep, _label(pred3, "pred"), sep, _label(gt3, "gt")])
 
 
 def load_checkpoint(path: str, device: torch.device):
@@ -139,6 +160,22 @@ def main() -> None:
                     metrics["mae"], metrics["mae_255"], metrics["mse"])
         with open(output_dir / "metrics.json", "w") as fh:
             json.dump(metrics, fh, indent=2)
+
+        if args.save_comparison:
+            cmp_dir = output_dir / "comparison"
+            cmp_dir.mkdir(parents=True, exist_ok=True)
+            white = [cfg.data.pad_value] * 3
+            mask_rels = frame[lbl_col].astype(str).tolist()
+            for rel, rel_mask, alpha in zip(rel_paths, mask_rels, alphas):
+                inp = load_image(
+                    root / rel, white, cfg.data.to_rgb, cfg.data.pad_to_square,
+                    cfg.data.unpremultiply_alpha,
+                )
+                gt = load_mask(root / rel_mask, cfg.data.pad_to_square, cfg.data.mask_pad_value)
+                panel = comparison_panel(inp, alpha, gt)
+                stem = Path(rel.replace("/", "__")).with_suffix(".png").name
+                cv2.imwrite(str(cmp_dir / stem), panel)
+            logger.info("Wrote %d comparison panels: %s", len(alphas), cmp_dir)
 
 
 if __name__ == "__main__":
