@@ -80,7 +80,7 @@ run:
   output_dir: runs/eva02_dpt
 
 wandb:
-  enabled: false                 # true + `wandb login` -> log config + per-epoch metrics
+  enabled: true                 # true + `wandb login` -> log config + per-epoch metrics
   project: torch-image-trainer-seg
   entity: null
   run_name: null                 # null -> <backbone>_<head>_<run timestamp>
