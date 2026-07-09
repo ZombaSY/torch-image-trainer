@@ -43,6 +43,10 @@ class DataConfig:
     pad_value: int = 255
     # cv2 reads BGR; convert to RGB to match conventional pretrained pipelines.
     to_rgb: bool = True
+    # Preload every preprocessed image into RAM at dataset construction,
+    # removing the per-item disk read + decode from the training loop.
+    # Disable if the dataset outgrows memory.
+    cache_in_memory: bool = True
 
 
 @dataclass

@@ -8,6 +8,7 @@ dropout, blur, and rotate.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import albumentations as A
@@ -144,6 +145,15 @@ class StyleDataset(Dataset):
         if bad:
             raise ValueError(f"Labels out of range [0,{data_cfg.num_classes}): {set(bad)}")
 
+        # In-memory cache of the preprocessed uint8 images. Unlike the matte
+        # trainer, the read/flatten/pad here is deterministic, so the final
+        # array is cached. Built eagerly in the main process so forked
+        # dataloader workers share the arrays copy-on-write.
+        self.cache: list[np.ndarray] | None = None
+        if data_cfg.cache_in_memory:
+            with ThreadPoolExecutor() as pool:
+                self.cache = list(pool.map(self._read_image, self.paths))
+
     def __len__(self) -> int:
         return len(self.paths)
 
@@ -158,7 +168,11 @@ class StyleDataset(Dataset):
         )
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        image = self._read_image(self.paths[idx])
+        if self.cache is not None:
+            # Copy so no downstream op can ever mutate the cached array.
+            image = self.cache[idx].copy()
+        else:
+            image = self._read_image(self.paths[idx])
         image = self.transform(image=image)["image"]
         return image, self.labels[idx]
 

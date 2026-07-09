@@ -10,6 +10,7 @@ data:
   pad_to_square: true
   pad_value: 255
   to_rgb: true
+  cache_in_memory: true       # preload all preprocessed images into RAM
 
 aug:
   horizontal_flip: true
