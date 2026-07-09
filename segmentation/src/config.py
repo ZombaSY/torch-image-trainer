@@ -79,6 +79,10 @@ class DataConfig:
     # source assets. These logos look mostly straight-alpha, so set false if
     # matte edges look over-bright. See dataset.composite_rgba.
     unpremultiply_alpha: bool = True
+    # Preload every raw decoded image+matte into RAM at dataset construction,
+    # removing the per-item disk read + PNG decode from the training loop (the
+    # full dataset decodes to ~3 GB). Disable if the dataset outgrows memory.
+    cache_in_memory: bool = True
 
 
 @dataclass

@@ -25,6 +25,7 @@ routes this automatically when the mask is passed to the same Compose call.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import albumentations as A
@@ -83,18 +84,24 @@ def composite_rgba(image: np.ndarray, bg_bgr, unpremultiply: bool) -> np.ndarray
     return composited.round().astype(np.uint8)
 
 
-def load_image(
-    path, bg_bgr, to_rgb: bool, pad_square: bool, unpremultiply: bool
-) -> np.ndarray:
-    """Read an RGBA logo and return an HxWx3 uint8 composite (RGB if ``to_rgb``).
-
-    Compositing and square-padding both use ``bg_bgr`` so the whole frame shares
-    one background. Centralized so training and inference preprocess identically.
-    """
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+def read_raw(path, flags: int = cv2.IMREAD_UNCHANGED) -> np.ndarray:
+    """Read a file with cv2, failing loudly on unreadable paths."""
+    image = cv2.imread(str(path), flags)
     if image is None:
         raise FileNotFoundError(f"Could not read image: {path}")
-    image = composite_rgba(image, bg_bgr, unpremultiply)  # BGR uint8
+    return image
+
+
+def process_image(
+    raw: np.ndarray, bg_bgr, to_rgb: bool, pad_square: bool, unpremultiply: bool
+) -> np.ndarray:
+    """Composite/pad a raw cv2 read into an HxWx3 uint8 frame (RGB if ``to_rgb``).
+
+    Compositing and square-padding both use ``bg_bgr`` so the whole frame shares
+    one background. Split from :func:`load_image` so cached raw reads take the
+    same path as fresh disk reads.
+    """
+    image = composite_rgba(raw, bg_bgr, unpremultiply)  # BGR uint8
     if pad_square:
         image = pad_to_square(image, [float(c) for c in bg_bgr])
     if to_rgb:
@@ -102,11 +109,19 @@ def load_image(
     return image
 
 
+def load_image(
+    path, bg_bgr, to_rgb: bool, pad_square: bool, unpremultiply: bool
+) -> np.ndarray:
+    """Read an RGBA logo and return an HxWx3 uint8 composite (RGB if ``to_rgb``).
+
+    Centralized so training and inference preprocess identically.
+    """
+    return process_image(read_raw(path), bg_bgr, to_rgb, pad_square, unpremultiply)
+
+
 def load_mask(path, pad_square: bool, pad_value: int) -> np.ndarray:
     """Read a grayscale alpha matte as HxW uint8; pad with ``pad_value`` (0)."""
-    mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if mask is None:
-        raise FileNotFoundError(f"Could not read mask: {path}")
+    mask = read_raw(path, cv2.IMREAD_GRAYSCALE)
     if pad_square:
         mask = pad_to_square(mask, pad_value)
     return mask
@@ -220,8 +235,24 @@ class MatteDataset(Dataset):
         self.images = frame[data_cfg.image_column].astype(str).tolist()
         self.masks = frame[data_cfg.mask_column].astype(str).tolist()
 
+        # In-memory cache of the *raw decoded* reads (RGBA image + matte). The
+        # cache sits before compositing because the background color is sampled
+        # per access (random_background aug). Built eagerly in the main process
+        # so forked dataloader workers share the arrays copy-on-write.
+        self.cache: list[tuple[np.ndarray, np.ndarray]] | None = None
+        if data_cfg.cache_in_memory:
+            with ThreadPoolExecutor() as pool:
+                self.cache = list(pool.map(self._read_pair, range(len(self.images))))
+
     def __len__(self) -> int:
         return len(self.images)
+
+    def _read_pair(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Raw decoded (image, matte) pair straight from disk, pre-composite."""
+        return (
+            read_raw(self.root / self.images[idx]),
+            read_raw(self.root / self.masks[idx], cv2.IMREAD_GRAYSCALE),
+        )
 
     def _sample_background(self) -> list[int]:
         """White by default; a random solid color when the aug fires (train)."""
@@ -235,12 +266,19 @@ class MatteDataset(Dataset):
     def _load_raw(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Composited RGB input + alpha matte at padded-square size (pre-aug)."""
         bg = self._sample_background()
-        image = load_image(
-            self.root / self.images[idx], bg,
+        if self.cache is not None:
+            # Copies so no downstream op can ever mutate the cached arrays.
+            raw_image = self.cache[idx][0].copy()
+            raw_mask = self.cache[idx][1].copy()
+        else:
+            raw_image, raw_mask = self._read_pair(idx)
+        image = process_image(
+            raw_image, bg,
             self.cfg.to_rgb, self.cfg.pad_to_square, self.cfg.unpremultiply_alpha,
         )
-        mask = load_mask(self.root / self.masks[idx], self.cfg.pad_to_square, self.cfg.mask_pad_value)
-        return image, mask
+        if self.cfg.pad_to_square:
+            raw_mask = pad_to_square(raw_mask, self.cfg.mask_pad_value)
+        return image, raw_mask
 
     def __getitem__(self, idx: int):
         image, mask = self._load_raw(idx)
