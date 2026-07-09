@@ -106,7 +106,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--seed", type=int, default=None,
-        help="Sampler seed for random search (default: base config run.seed).",
+        help="Sampler seed for random search (default: fresh entropy each "
+             "run; the seed is logged so a sweep can be replayed).",
     )
     parser.add_argument(
         "--output-dir", default=None,
@@ -248,7 +249,7 @@ def main() -> None:
     _validate(args)
     base = load_config(args.config)
     monitor = base.run.monitor
-    seed = args.seed if args.seed is not None else base.run.seed
+    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
     rng = random.Random(seed)
 
     sweep_root = Path(

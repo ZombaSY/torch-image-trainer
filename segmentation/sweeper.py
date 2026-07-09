@@ -53,8 +53,6 @@ MODEL_CONFIGS: dict[str, str] = {
 LR_FACTOR_RANGE = (0.1, 10.0)
 # aug.cutmix_p is sampled uniformly from this range.
 CUTMIX_P_RANGE = (0.0, 0.5)
-# Sampler seed (trial sequence is reproducible for a given --trials).
-SEED = 42
 
 SWEEP_ROOT_PARENT = Path("runs")
 
@@ -68,6 +66,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trials", type=int, default=100,
         help="Number of random trials to run.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Sampler seed for the trial plan (default: fresh entropy each "
+             "run; the seed is logged so a sweep can be replayed).",
     )
     args = parser.parse_args()
     if args.trials < 1:
@@ -138,7 +141,8 @@ def fmt_params(params: dict) -> str:
 
 def main() -> None:
     args = parse_args()
-    rng = random.Random(SEED)
+    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
+    rng = random.Random(seed)
 
     # All base configs monitor the same (minimized) metric; verify and reuse.
     monitors = {load_config(path).run.monitor for path in MODEL_CONFIGS.values()}
@@ -154,7 +158,7 @@ def main() -> None:
     logger = get_logger("sweep", sweep_root / "sweep.log")
     logger.info(
         "Sweep %s | %d trials | monitor=%s (%s) | seed=%d",
-        sweep_root, len(plan), monitor, "min" if minimize else "max", SEED,
+        sweep_root, len(plan), monitor, "min" if minimize else "max", seed,
     )
     for i, params in enumerate(plan):
         logger.info("  trial %03d: %s", i, fmt_params(params))
