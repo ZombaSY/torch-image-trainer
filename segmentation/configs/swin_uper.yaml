@@ -1,9 +1,9 @@
 # Swin-L-v2 (hierarchical) + UPerHead. Seg recipe: Swin/mmseg UPerNet ADE20K
 # AdamW lr=6e-5 (single global), wd=0.01, no layer decay, drop_path=0.3, poly, warmup 1500.
 data:
-  root: /data/seo_sunyong/workspace/data/cocone/background-segmentation/P1-logo
-  train_csv: train-seg.csv
-  val_csv: val-seg.csv
+  root: /data/seo_sunyong/workspace/data/background-segmentation
+  train_csv: train-part.csv
+  val_csv: valid-part.csv
   image_column: input
   mask_column: label
   pad_to_square: true
@@ -51,8 +51,8 @@ model:
 
 optim:
   epochs: 10000
-  batch_size: 8
-  num_workers: 8
+  batch_size: 32
+  num_workers: 16
   optimizer: adamw
   lr: 6.0e-5
   backbone_lr: 6.0e-5
@@ -74,7 +74,7 @@ run:
   deterministic: true
   device: cuda
   monitor: mae
-  early_stop_patience: 200
+  early_stop_patience: 70
   save_last: true
   log_interval: 10
   output_dir: runs/swin_uper
