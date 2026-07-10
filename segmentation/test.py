@@ -37,7 +37,7 @@ from src.utils import get_logger, matting_metrics
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained matte checkpoint.")
-    parser.add_argument("--checkpoint", required=True, help="Path to a .pt checkpoint.")
+    parser.add_argument("--checkpoint", default="runs/sweep_260709-101240/trial_013/260709-203006/best_e288_mae0.0249.pt", help="Path to a .pt checkpoint.")
     parser.add_argument("--csv", default=None, help="CSV of images (defaults to config's val_csv).")
     parser.add_argument("--data-root", default=None, help="Override the dataset root.")
     parser.add_argument("--output-dir", default=None, help="Defaults to <checkpoint_dir>/test.")
