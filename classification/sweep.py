@@ -27,6 +27,12 @@ Either way the trial's result (params, best score, best epoch, full
 per-epoch history) is archived to ``<sweep>/sweep_results.json`` first, so
 no information is lost when the heavy run directory is deleted.
 
+After every completed trial the parameter<->score correlations (each swept
+axis vs the best monitored metric and the best validation loss, across all
+trials so far) are recomputed and rewritten to
+``<sweep>/sweep_correlation.json``. Both files live on disk and are updated
+per trial, so a sweep killed mid-way still leaves its analysis behind.
+
 Examples
 --------
 Random search: 20 trials, lr log-uniform in [1e-5, 1e-3], backbone_lr
@@ -65,7 +71,7 @@ import sys
 from pathlib import Path
 
 from src.config import SUPPORTED_BACKBONES, load_config
-from src.utils import get_logger, run_timestamp
+from src.utils import get_logger, run_timestamp, sweep_correlations
 
 # Default search space. The LR axes are log-uniform [low, high] ranges; the
 # backbone axis is the full supported set, sampled uniformly (random) or
@@ -221,6 +227,44 @@ def best_metric_from_history(run_dir: Path, monitor: str) -> tuple[float, int]:
     return best_score, best_epoch
 
 
+def best_loss_from_history(history: list[dict]) -> float | None:
+    """Lowest validation loss in a run, for the correlation report."""
+    losses = [rec["loss"] for rec in history
+              if isinstance(rec.get("loss"), (int, float))]
+    return round(min(losses), 4) if losses else None
+
+
+def update_correlations(results: list[dict], monitor: str, path: Path, logger) -> None:
+    """Recompute parameter<->score correlations from every archived trial and
+    rewrite them to ``path``. Called after each trial so a sweep killed by the
+    user still leaves the analysis on disk."""
+    rows = [
+        {
+            "params": r["params"],
+            "metrics": {
+                f"best_{monitor}": r.get(f"best_{monitor}"),
+                "best_loss": r.get("best_loss"),
+            },
+        }
+        for r in results if r.get("status") == "ok"
+    ]
+    report = sweep_correlations(rows)
+    with open(path, "w") as fh:
+        json.dump(report, fh, indent=2)
+
+    stats = report["metrics"].get(f"best_{monitor}", {})
+    parts = [
+        f"{param} rho={s['spearman']:+.2f}"
+        for param, s in stats.items()
+        if s["kind"] == "numeric" and s["spearman"] is not None
+    ]
+    if parts:
+        logger.info(
+            "correlation vs best_%s (n=%d): %s",
+            monitor, report["n_trials"], " | ".join(parts),
+        )
+
+
 def fmt_params(params: dict) -> str:
     return (
         f"backbone={params['model.backbone']} "
@@ -311,12 +355,16 @@ def main() -> None:
                 "params": params,
                 "status": "ok",
                 f"best_{monitor}": round(score, 4),
+                "best_loss": best_loss_from_history(history),
                 "best_epoch": epoch,
                 "breaks_best": breaks_best,
                 "history": history,
             }
         )
         _dump(results_path, results)  # archive before any deletion
+        update_correlations(
+            results, monitor, sweep_root / "sweep_correlation.json", logger
+        )
 
         if breaks_best:
             logger.info(
