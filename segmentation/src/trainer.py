@@ -76,6 +76,15 @@ class Trainer:
                 pred = self.model(images)
                 loss = self.criterion(pred, targets)
 
+            loss_val = loss.item()
+            if not math.isfinite(loss_val):
+                # Stop before backward so NaN gradients never touch the weights.
+                self.logger.error(
+                    "Non-finite loss %s at epoch %d step %d; aborting epoch.",
+                    loss_val, epoch, step,
+                )
+                return float("nan")
+
             self.scaler.scale(loss).backward()
             if self.cfg.optim.grad_clip_norm > 0:
                 self.scaler.unscale_(self.optimizer)
@@ -84,11 +93,11 @@ class Trainer:
             self.scaler.update()
             self.scheduler.step()  # per-iteration poly/cosine + warmup
 
-            running += loss.item() * images.size(0)
+            running += loss_val * images.size(0)
             seen += images.size(0)
             if step % self.cfg.run.log_interval == 0:
                 self.logger.info(
-                    "epoch %d step %d/%d loss %.4f", epoch, step, len(loader), loss.item(),
+                    "epoch %d step %d/%d loss %.4f", epoch, step, len(loader), loss_val,
                 )
         return running / max(1, seen)
 
@@ -148,8 +157,15 @@ class Trainer:
         self.wandb = WandbLogger(self.cfg, self.output_dir, self.logger)
 
         epoch = 0
+        diverged = False
         for epoch in range(self.cfg.optim.epochs):
             train_loss = self._run_train_epoch(train_loader, epoch)
+            if not math.isfinite(train_loss):
+                diverged = True
+                self.logger.error(
+                    "Early stop: training loss went non-finite at epoch %d.", epoch
+                )
+                break
             val_metrics = self._run_val_epoch(val_loader)
 
             monitored = val_metrics[self.cfg.run.monitor]
@@ -192,7 +208,9 @@ class Trainer:
                 )
                 break
 
-        if self.cfg.run.save_last:
+        # On divergence the current weights/metrics are not worth keeping;
+        # the best checkpoint (if any) is the last trustworthy state.
+        if self.cfg.run.save_last and not diverged:
             self._save_checkpoint(self._ckpt_name("last", epoch, val_metrics), epoch, val_metrics)
 
         with open(self.output_dir / "history.json", "w") as fh:
