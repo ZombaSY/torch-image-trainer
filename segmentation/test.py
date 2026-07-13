@@ -46,6 +46,10 @@ def parse_args() -> argparse.Namespace:
         "--save-comparison", action="store_true",
         help="Save per-image [input | prediction | ground truth] panels (needs labels).",
     )
+    parser.add_argument(
+        "--precision", default="fp32", choices=["fp32", "fp16"],
+        help="Inference precision; fp16 uses CUDA autocast (same as training AMP).",
+    )
     parser.add_argument("--device", default="cuda", help="cuda or cpu.")
     return parser.parse_args()
 
@@ -82,7 +86,7 @@ def load_checkpoint(path: str, device: torch.device):
 
 
 @torch.no_grad()
-def predict(model, cfg, transform, device, root, rel_paths, batch_size):
+def predict(model, cfg, transform, device, root, rel_paths, batch_size, fp16=False):
     """Return a list of predicted alpha maps (HxW float in [0,1]), full-size per image."""
     # NOTE: images are resized to the network input; the returned matte is at
     # that resolution. Batch by identical shape (all square, same size here).
@@ -91,7 +95,8 @@ def predict(model, cfg, transform, device, root, rel_paths, batch_size):
 
     def flush():
         x = torch.stack(batch).to(device)
-        alpha = model(x)[:, 0].float().cpu().numpy()  # (B, H, W)
+        with torch.amp.autocast("cuda", enabled=fp16 and device.type == "cuda"):
+            alpha = model(x)[:, 0].float().cpu().numpy()  # (B, H, W)
         out_alphas.extend(list(alpha))
 
     white = [cfg.data.pad_value] * 3
@@ -135,11 +140,15 @@ def main() -> None:
     has_labels = lbl_col in frame.columns
 
     logger.info(
-        "Checkpoint %s | backbone %s + %s | %d images from %s",
-        args.checkpoint, cfg.model.backbone, cfg.head_name, len(rel_paths), csv_path,
+        "Checkpoint %s | backbone %s + %s | %s | %d images from %s",
+        args.checkpoint, cfg.model.backbone, cfg.head_name, args.precision,
+        len(rel_paths), csv_path,
     )
 
-    alphas = predict(model, cfg, transform, device, root, rel_paths, args.batch_size)
+    alphas = predict(
+        model, cfg, transform, device, root, rel_paths, args.batch_size,
+        fp16=args.precision == "fp16",
+    )
 
     # Save predicted mattes (flatten nested paths so they don't collide).
     for rel, alpha in zip(rel_paths, alphas):
