@@ -3,8 +3,9 @@
 
 Search space (fixed — the only CLI knob is the number of trials):
 
-* **model** — one of the four backbone configs, picked uniformly per trial:
-  ``dinov2`` / ``eva`` / ``internimage`` / ``swin``.
+* **model** — every YAML under ``configs/`` (discovered at startup, keyed by
+  file stem, e.g. ``dinov2_dpt`` / ``eva02_vitmatte``), picked uniformly per
+  trial.
 * **optim.lr** — log-uniform in ``[0.1x, 10x]`` of the chosen config's own
   ``optim.lr`` (``optim.backbone_lr`` is scaled by the same factor so the
   head/backbone ratio is preserved where layer_decay == 1).
@@ -46,12 +47,12 @@ from pathlib import Path
 from src.config import MINIMIZE_METRICS, load_config
 from src.utils import get_logger, run_timestamp, sweep_correlations
 
-# Swept models: name -> base YAML config (each carries its own tuned lr).
+# Swept models: file stem -> base YAML config (each carries its own tuned lr).
+# Every config under configs/ is in the selection pool, so a new backbone/head
+# config joins the sweep by simply being added there.
+_HERE = Path(__file__).resolve().parent
 MODEL_CONFIGS: dict[str, str] = {
-    "dinov2": "configs/dinov2_dpt.yaml",
-    "eva": "configs/eva02_dpt.yaml",
-    "internimage": "configs/internimage_uper.yaml",
-    "swin": "configs/swin_uper.yaml",
+    path.stem: str(path) for path in sorted((_HERE / "configs").glob("*.yaml"))
 }
 
 # LR is sampled log-uniformly in [LR_FACTOR_RANGE[0] * base_lr,
