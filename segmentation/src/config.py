@@ -82,7 +82,10 @@ class DataConfig:
     val_csv: str = "val-seg.csv"
     image_column: str = "input"
     mask_column: str = "label"
-    # WD-style square padding on a white background for the RGB input.
+    # WD-style square padding for the RGB input. The composite/pad background
+    # is white (``dataset.WHITE_BG``) unless the random-background aug fires;
+    # ``pad_value`` no longer drives it and is kept only so configs embedded in
+    # existing checkpoints/run snapshots still load.
     pad_to_square: bool = True
     pad_value: int = 255
     # Padded regions are background, so the alpha there is fully transparent.
@@ -120,6 +123,15 @@ class AugConfig:
     rotate: bool = True
     rotate_p: float = 0.5
     rotate_limit: int = 20
+
+    # Random crop at the model input size (train only, image AND mask). When it
+    # fires, the padded square is cropped at native scale instead of resized
+    # down — translation/scale augmentation that also presents matte edges at
+    # full detail. Samples smaller than the input size are padded (white image
+    # bg, transparent mask) at a random position instead. Defaults off so
+    # config snapshots from older runs reproduce unchanged.
+    random_crop: bool = False
+    random_crop_p: float = 0.5
 
     blur: bool = True
     blur_p: float = 0.2

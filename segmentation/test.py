@@ -32,7 +32,7 @@ import pandas as pd
 import torch
 
 from src.config import from_dict
-from src.dataset import build_transforms, load_image, load_mask  # shared preprocessing
+from src.dataset import WHITE_BG, build_transforms, load_image, load_mask  # shared preprocessing
 from src.model import build_model
 from src.utils import get_logger, matting_metrics
 
@@ -105,7 +105,7 @@ def predict(model, cfg, transform, device, root, rel_paths, batch_size, fp16=Fal
             alpha = model(x)[:, 0].float().cpu().numpy()  # (B, H, W)
         out_alphas.extend(list(alpha))
 
-    white = [cfg.data.pad_value] * 3
+    white = list(WHITE_BG)  # same default background the trainer uses
     for rel in rel_paths:
         image = load_image(
             root / rel, white, cfg.data.to_rgb, cfg.data.pad_to_square,
@@ -191,7 +191,7 @@ def main() -> None:
         if args.save_comparison:
             cmp_dir = output_dir / "comparison"
             cmp_dir.mkdir(parents=True, exist_ok=True)
-            white = [cfg.data.pad_value] * 3
+            white = list(WHITE_BG)
             mask_rels = frame[lbl_col].astype(str).tolist()
             for rel, rel_mask, alpha in zip(rel_paths, mask_rels, alphas):
                 inp = load_image(

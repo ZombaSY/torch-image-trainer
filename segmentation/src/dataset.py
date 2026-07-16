@@ -43,6 +43,11 @@ cv2.setNumThreads(0)
 
 _ALPHA_EPS = 1.0 / 255.0
 
+# Default composite/pad background for the RGB input: white. Applied whenever
+# the random-background aug does not fire (and always at val/inference), so
+# train and test see the same background unless the aug deliberately varies it.
+WHITE_BG = (255, 255, 255)
+
 
 def pad_to_square(image: np.ndarray, value) -> np.ndarray:
     """Pad an HxWxC (or HxW) image to a centered square with a constant border."""
@@ -149,6 +154,18 @@ def build_transforms(
                 A.Rotate(
                     limit=aug.rotate_limit, border_mode=cv2.BORDER_CONSTANT,
                     fill=0, fill_mask=0, p=aug.rotate_p,
+                )
+            )
+        # Random crop at the model input size: keeps native scale (the resize
+        # below becomes a no-op); smaller samples are padded at a random
+        # position (white bg, transparent mask) for a translation aug instead.
+        # When the crop doesn't fire, the resize handles the full square.
+        if aug.random_crop:
+            ops.append(
+                A.RandomCrop(
+                    image_size, image_size, pad_if_needed=True,
+                    pad_position="random", border_mode=cv2.BORDER_CONSTANT,
+                    fill=WHITE_BG, fill_mask=0, p=aug.random_crop_p,
                 )
             )
         # Photometric — image only (mask untouched).
@@ -261,7 +278,7 @@ class MatteDataset(Dataset):
             and float(np.random.rand()) < self.aug.random_background_p
         ):
             return [int(c) for c in np.random.randint(0, 256, size=3)]
-        return [self.cfg.pad_value] * 3
+        return list(WHITE_BG)
 
     def _load_raw(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Composited RGB input + alpha matte at padded-square size (pre-aug)."""

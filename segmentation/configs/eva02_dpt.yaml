@@ -21,6 +21,8 @@ aug:
   rotate: true
   rotate_p: 0.5
   rotate_limit: 20
+  random_crop: true              # crop at model input size (native scale); pads smaller samples
+  random_crop_p: 0.5
   blur: true
   blur_p: 0.2
   blur_limit: 5
