@@ -1,0 +1,92 @@
+# InternImage-L (hierarchical) + UPerMatte detail-capture head (UPer context +
+# ConvStream): predicts the matte at full resolution for sharp alpha
+# boundaries. Optim recipe kept identical to internimage_uper.yaml.
+data:
+  root: /data/seo_sunyong/workspace/data/background-segmentation
+  train_csv: train-part.csv
+  val_csv: valid-part.csv
+  image_column: input
+  mask_column: label
+  pad_to_square: true
+  pad_value: 255
+  mask_pad_value: 0
+  to_rgb: true
+  unpremultiply_alpha: true   # straight-alpha data: set false if edges over-bright
+  cache_in_memory: true       # preload all decoded images+mattes into RAM (~3 GB)
+
+aug:
+  horizontal_flip: true
+  horizontal_flip_p: 0.5
+  vertical_flip: true
+  vertical_flip_p: 0.5
+  rotate: true
+  rotate_p: 0.5
+  rotate_limit: 20
+  random_crop: true              # crop at model input size (native scale); pads smaller samples
+  random_crop_p: 0.5
+  blur: true
+  blur_p: 0.2
+  blur_limit: 5
+  coarse_dropout: true
+  coarse_dropout_p: 0.5
+  coarse_dropout_max_holes: 8
+  coarse_dropout_max_height_frac: 0.15
+  coarse_dropout_max_width_frac: 0.15
+  color_jitter: true
+  color_jitter_p: 0.5
+  color_jitter_brightness: 0.2
+  color_jitter_contrast: 0.2
+  color_jitter_saturation: 0.2
+  color_jitter_hue: 0.1
+  random_background: true
+  random_background_p: 0.5
+  cutmix: true                   # cut-paste patch on image+mask, before other aug
+  cutmix_alpha: 1.0
+  cutmix_p: 0.5
+
+model:
+  backbone: internimage-l
+  head: upermatte
+  pretrained: true
+  decoder_channels: 256
+  head_dropout: 0.1
+  drop_path_rate: 0.0
+  image_size: null
+
+optim:
+  epochs: 10000
+  batch_size: 16
+  num_workers: 16
+  optimizer: adamw
+  lr: 2.0e-5
+  backbone_lr: 2.0e-5
+  weight_decay: 0.05
+  layer_decay: 0.94              # <1 enables layer-wise LR decay on the backbone
+  scheduler: poly              # paper seg recipe: poly power 1.0
+  power: 1.0
+  warmup_iters: 1500           # paper value; consider lowering for this tiny set
+  warmup_ratio: 1.0e-6
+  min_lr: 0.0
+  loss: l1
+  l1_mse_weight: 0.5
+  amp: true
+  grad_clip_norm: 0.1
+
+run:
+  mode: full_finetune
+  seed: 42
+  deterministic: true
+  device: cuda
+  monitor: mae
+  early_stop_patience: 70
+  save_last: true
+  log_interval: 10
+  output_dir: runs/internimage_upermatte
+
+wandb:
+  enabled: true                 # true + `wandb login` -> log config + per-epoch metrics
+  project: torch-image-trainer-seg
+  entity: null
+  run_name: null                 # null -> <backbone>_<head>_<run timestamp>
+  mode: online                   # online | offline | disabled
+  tags: []
