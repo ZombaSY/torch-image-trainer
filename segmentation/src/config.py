@@ -47,7 +47,20 @@ BACKBONES: dict[str, dict[str, Any]] = {
     },
 }
 
-HEADS = ("dpt", "uper")
+# Decoder heads and the backbone family each one accepts. The plain heads
+# ('dpt'/'uper') predict the matte from backbone-stride features (final logit
+# bilinearly upsampled -> blurry alpha boundaries); the '*matte' detail-capture
+# heads (ViTMatte-style ConvStream + DeepLab ASPP context) fuse raw-image
+# detail up to stride 1 for sharp boundaries. See heads.py.
+HEAD_FAMILIES: dict[str, str] = {
+    "dpt": "vit",
+    "vitmatte": "vit",
+    "uper": "hierarchical",
+    "upermatte": "hierarchical",
+}
+HEADS = tuple(HEAD_FAMILIES)
+# Heads whose fusion widths are decoder_channels / {2,4,8}.
+DETAIL_HEADS = ("vitmatte", "upermatte")
 TRAIN_MODES = ("decoder_only", "full_finetune")
 LOSSES = ("l1", "mse", "l1_mse")
 # Metrics where a *lower* value is better (drives best-checkpoint selection).
@@ -149,7 +162,8 @@ class ModelConfig:
 
     backbone: str = "eva02-l"
     # None -> use the family default from BACKBONES (dpt for vit, uper for
-    # hierarchical). Set explicitly only to force a specific head.
+    # hierarchical). Set explicitly to force a specific head — e.g. the
+    # detail-capture heads ('vitmatte' / 'upermatte') for sharp matte edges.
     head: str | None = None
     pretrained: bool = True
     # Channel width of the decoder's fused features.
@@ -248,6 +262,16 @@ class Config:
         head = self.model.head
         if head is not None and head not in HEADS:
             raise ValueError(f"Unknown head {head!r}; choose one of {HEADS}")
+        if head is not None and HEAD_FAMILIES[head] != self.backbone_meta["family"]:
+            raise ValueError(
+                f"Head {head!r} expects a {HEAD_FAMILIES[head]!r} backbone, but "
+                f"{self.model.backbone!r} is {self.backbone_meta['family']!r}"
+            )
+        if self.head_name in DETAIL_HEADS and self.model.decoder_channels % 8:
+            raise ValueError(
+                f"{self.head_name!r} needs model.decoder_channels divisible by 8 "
+                f"(got {self.model.decoder_channels})"
+            )
         if self.run.mode not in TRAIN_MODES:
             raise ValueError(f"Unknown mode {self.run.mode!r}; choose one of {TRAIN_MODES}")
         if self.optim.loss not in LOSSES:
