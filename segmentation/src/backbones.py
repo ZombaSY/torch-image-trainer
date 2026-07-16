@@ -228,13 +228,54 @@ def _build_dinov2(cfg: Config, meta: dict):
     return adapter, data_config
 
 
+def _ensure_pkg_resources():
+    """setuptools>=81 no longer ships ``pkg_resources``, but the InternImage
+    remote code still imports it at module level (it only uses it to
+    version-check the optional DCNv3 CUDA op). Register a minimal stand-in so
+    transformers' import check and the remote module both resolve it.
+    """
+    try:
+        import pkg_resources  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import sys
+    import types
+    from importlib import metadata
+
+    stub = types.ModuleType("pkg_resources")
+    stub.get_distribution = lambda name: types.SimpleNamespace(
+        version=metadata.version(name)
+    )
+    stub.DistributionNotFound = metadata.PackageNotFoundError
+    sys.modules["pkg_resources"] = stub
+
+
 def _build_internimage(cfg: Config, meta: dict):
     try:
-        from transformers import AutoModel
+        from transformers import AutoConfig
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        _ensure_pkg_resources()
 
         # The HF repo ships a pure-PyTorch DCNv3 fallback, so no custom CUDA op
         # build is required; trust_remote_code loads the model definition.
-        model = AutoModel.from_pretrained(meta["model_id"], trust_remote_code=True)
+        conf = AutoConfig.from_pretrained(meta["model_id"], trust_remote_code=True)
+        model_cls = get_class_from_dynamic_module(
+            conf.auto_map["AutoModel"], meta["model_id"]
+        )
+        # The remote code predates transformers 5 and never calls post_init(),
+        # which from_pretrained now requires (all_tied_weights_keys etc.).
+        if not getattr(model_cls, "_post_init_patched", False):
+            orig_init = model_cls.__init__
+
+            def _init(self, config, *args, **kwargs):
+                orig_init(self, config, *args, **kwargs)
+                self.post_init()
+
+            model_cls.__init__ = _init
+            model_cls._post_init_patched = True
+        model = model_cls.from_pretrained(meta["model_id"])
     except Exception as exc:  # missing remote code, weights, or (rare) op path
         raise RuntimeError(
             f"Could not load InternImage backbone {meta['model_id']!r}: {exc}\n"
