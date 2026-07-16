@@ -16,6 +16,8 @@ Examples
     python test.py --checkpoint runs/eva02_dpt/best.pt
     python test.py --checkpoint runs/swin_uper/best.pt \
         --csv /path/to/test.csv --output-dir runs/swin_uper/test
+    python test.py --folders today            # only images under .../today/
+    python test.py --folders today logo foreground-png
 """
 
 from __future__ import annotations
@@ -37,9 +39,13 @@ from src.utils import get_logger, matting_metrics
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained matte checkpoint.")
-    parser.add_argument("--checkpoint", default="runs/sweep_260709-101240/trial_013/260709-203006/best_e288_mae0.0249.pt", help="Path to a .pt checkpoint.")
+    parser.add_argument("--checkpoint", default="runs/sweep_260709-101240/trial_018/260710-145027/best_e259_mae0.0238.pt", help="Path to a .pt checkpoint.")
     parser.add_argument("--csv", default=None, help="CSV of images (defaults to config's val_csv).")
     parser.add_argument("--data-root", default=None, help="Override the dataset root.")
+    parser.add_argument(
+        "--folders", nargs="+", default=None,
+        help="Only test images whose parent folder matches (e.g. today foreground-png logo).",
+    )
     parser.add_argument("--output-dir", default=None, help="Defaults to <checkpoint_dir>/test.")
     parser.add_argument("--batch-size", type=int, default=8, help="Inference batch size.")
     parser.add_argument(
@@ -123,7 +129,9 @@ def main() -> None:
 
     root = Path(args.data_root or cfg.data.root)
     csv_path = Path(args.csv) if args.csv else root / cfg.data.val_csv
-    output_dir = Path(args.output_dir or (Path(args.checkpoint).parent / "test"))
+    # Folder-filtered runs get their own directory so full-set results survive.
+    default_name = "test" if not args.folders else "test_" + "-".join(args.folders)
+    output_dir = Path(args.output_dir or (Path(args.checkpoint).parent / default_name))
     (output_dir / "masks").mkdir(parents=True, exist_ok=True)
     logger = get_logger("test", output_dir / "test.log")
 
@@ -136,13 +144,23 @@ def main() -> None:
     img_col, lbl_col = cfg.data.image_column, cfg.data.mask_column
     if img_col not in frame.columns:
         raise ValueError(f"Column {img_col!r} missing from {csv_path}")
+    if args.folders:
+        parents = frame[img_col].astype(str).map(lambda p: Path(p).parent.name)
+        keep = parents.isin(args.folders)
+        if not keep.any():
+            raise ValueError(
+                f"No rows in {csv_path} under folders {args.folders}; "
+                f"available: {sorted(parents.unique())}"
+            )
+        frame = frame[keep].reset_index(drop=True)
     rel_paths = frame[img_col].astype(str).tolist()
     has_labels = lbl_col in frame.columns
 
     logger.info(
-        "Checkpoint %s | backbone %s + %s | %s | %d images from %s",
+        "Checkpoint %s | backbone %s + %s | %s | %d images from %s%s",
         args.checkpoint, cfg.model.backbone, cfg.head_name, args.precision,
         len(rel_paths), csv_path,
+        f" (folders: {', '.join(args.folders)})" if args.folders else "",
     )
 
     alphas = predict(
