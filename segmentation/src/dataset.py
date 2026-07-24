@@ -25,6 +25,7 @@ routes this automatically when the mask is passed to the same Compose call.
 
 from __future__ import annotations
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -229,6 +230,17 @@ def cutmix_pair(
     return image, mask
 
 
+def _tile_positions(dim: int, tile: int, overlap: int) -> list[int]:
+    """Evenly spaced tile starts covering ``[0, dim)`` with at least *overlap*
+    pixels shared between neighbours. Ported from ``logo_matter._tile_positions``
+    (the inference tiler) so train/val decompose an image exactly as inference
+    does."""
+    if dim <= tile:
+        return [0]
+    n = math.ceil((dim - overlap) / (tile - overlap))
+    return [round(i * (dim - tile) / (n - 1)) for i in range(n)]
+
+
 class MatteDataset(Dataset):
     """CSV-driven alpha-matte dataset.
 
@@ -236,14 +248,26 @@ class MatteDataset(Dataset):
     to ``data.root``). ``__getitem__`` returns ``(image, alpha)`` where ``image``
     is a normalized ``(3, H, W)`` float tensor and ``alpha`` is a ``(1, H, W)``
     float tensor in ``[0, 1]``.
+
+    With ``data.tiling`` on, each image is expanded into a grid of native-scale
+    ``image_size`` square tiles (see :func:`_tile_positions`); the sample list
+    becomes one entry per ``(image, tile)`` so both splits get deterministic
+    full coverage at source resolution instead of a downscaled square. Train
+    tiles additionally get isotropic scale/position jitter (``tile_scale_*``);
+    val tiles are exact native crops.
     """
 
-    def __init__(self, csv_path, data_cfg: DataConfig, aug_cfg: AugConfig, transform: A.Compose, train: bool):
+    def __init__(
+        self, csv_path, data_cfg: DataConfig, aug_cfg: AugConfig,
+        transform: A.Compose, train: bool, image_size: int,
+    ):
         self.root = Path(data_cfg.root)
         self.cfg = data_cfg
         self.aug = aug_cfg
         self.transform = transform
         self.train = train
+        self.image_size = image_size
+        self.tiling = data_cfg.tiling
 
         frame = pd.read_csv(csv_path)
         for col in (data_cfg.image_column, data_cfg.mask_column):
@@ -261,8 +285,15 @@ class MatteDataset(Dataset):
             with ThreadPoolExecutor() as pool:
                 self.cache = list(pool.map(self._read_pair, range(len(self.images))))
 
+        # Flat (image_idx, tile_y, tile_x) index for tiling; None otherwise (one
+        # sample per image). Built from each image's native size after the cache
+        # so tile counts come from the real resolution.
+        self.tiles: list[tuple[int, int, int]] | None = None
+        if self.tiling:
+            self.tiles = self._build_tile_index()
+
     def __len__(self) -> int:
-        return len(self.images)
+        return len(self.tiles) if self.tiling else len(self.images)
 
     def _read_pair(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Raw decoded (image, matte) pair straight from disk, pre-composite."""
@@ -281,7 +312,11 @@ class MatteDataset(Dataset):
         return list(WHITE_BG)
 
     def _load_raw(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Composited RGB input + alpha matte at padded-square size (pre-aug)."""
+        """Composited RGB input + alpha matte (pre-aug).
+
+        Square-padded to ``pad_to_square`` normally; under tiling the padding is
+        bypassed so tiles are cropped from the native-resolution composite (the
+        tile grid handles edges via per-tile padding instead)."""
         bg = self._sample_background()
         if self.cache is not None:
             # Copies so no downstream op can ever mutate the cached arrays.
@@ -289,16 +324,101 @@ class MatteDataset(Dataset):
             raw_mask = self.cache[idx][1].copy()
         else:
             raw_image, raw_mask = self._read_pair(idx)
+        pad_square = self.cfg.pad_to_square and not self.tiling
         image = process_image(
             raw_image, bg,
-            self.cfg.to_rgb, self.cfg.pad_to_square, self.cfg.unpremultiply_alpha,
+            self.cfg.to_rgb, pad_square, self.cfg.unpremultiply_alpha,
         )
-        if self.cfg.pad_to_square:
+        if pad_square:
             raw_mask = pad_to_square(raw_mask, self.cfg.mask_pad_value)
         return image, raw_mask
 
+    def _image_hw(self, idx: int) -> tuple[int, int]:
+        """Native (H, W) of image *idx* — from the cache when present, else a
+        one-time raw read. Compositing/tiling never change these dims."""
+        if self.cache is not None:
+            return self.cache[idx][0].shape[:2]
+        return read_raw(self.root / self.images[idx]).shape[:2]
+
+    def _build_tile_index(self) -> list[tuple[int, int, int]]:
+        """Expand every image into its ``(image_idx, tile_y, tile_x)`` grid."""
+        tile, overlap = self.image_size, self.cfg.tile_overlap
+        index: list[tuple[int, int, int]] = []
+        for i in range(len(self.images)):
+            h, w = self._image_hw(i)
+            for y in _tile_positions(h, tile, overlap):
+                for x in _tile_positions(w, tile, overlap):
+                    index.append((i, y, x))
+        return index
+
+    def _make_tile(
+        self, image: np.ndarray, mask: np.ndarray, y: int, x: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Crop one square tile from a native-resolution composite.
+
+        Val (no jitter): an exact ``image_size`` window at ``(y, x)``, edges
+        center-padded — matches ``logo_matter._predict_alpha_tiled``. Train:
+        isotropic enlarge (a smaller ``image_size / s`` window, ``s`` in
+        ``[1, tile_scale_max]``, upscaled by the resize tail) plus random
+        window placement; sub-window content is padded (never stretched, never
+        downscaled). Returns a square ``win x win`` image+mask; the transform
+        tail's ``A.Resize`` scales it to ``image_size``.
+        """
+        tile = self.image_size
+
+        # Isotropic enlarge: shrink the sampled window so the resize tail
+        # upscales it (object appears larger). win <= tile, so never a downscale.
+        win = tile
+        if (
+            self.train and self.aug.tile_scale_jitter
+            and float(np.random.rand()) < self.aug.tile_scale_jitter_p
+        ):
+            s = float(np.random.uniform(1.0, self.aug.tile_scale_max))
+            win = max(1, min(tile, int(round(tile / s))))
+
+        # Window top-left in native coords. Train: random placement within the
+        # tile extent (translation). Val / no jitter: aligned to (y, x).
+        if self.train and win < tile:
+            y = y + int(np.random.randint(0, tile - win + 1))
+            x = x + int(np.random.randint(0, tile - win + 1))
+
+        return self._crop_window(image, mask, y, x, win)
+
+    def _crop_window(
+        self, image: np.ndarray, mask: np.ndarray, y: int, x: int, win: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Crop a ``win x win`` window at native scale, padding out-of-bounds
+        regions (image -> white, mask -> ``mask_pad_value``). Sub-``win`` content
+        is placed at a random position when ``tile_random_pad`` (train), else
+        centered."""
+        h, w = image.shape[:2]
+        sy0, sx0 = max(0, y), max(0, x)
+        sy1, sx1 = min(h, y + win), min(w, x + win)
+        ch, cw = sy1 - sy0, sx1 - sx0  # in-bounds content size
+
+        if self.train and self.aug.tile_random_pad and (ch < win or cw < win):
+            top = int(np.random.randint(0, win - ch + 1))
+            left = int(np.random.randint(0, win - cw + 1))
+        else:  # center-pad (val, and train when tile_random_pad is off)
+            top, left = (win - ch) // 2, (win - cw) // 2
+
+        img_tile = np.full((win, win, 3), WHITE_BG, dtype=image.dtype)
+        img_tile[top:top + ch, left:left + cw] = image[sy0:sy1, sx0:sx1]
+        mask_tile = np.full((win, win), self.cfg.mask_pad_value, dtype=mask.dtype)
+        mask_tile[top:top + ch, left:left + cw] = mask[sy0:sy1, sx0:sx1]
+        return img_tile, mask_tile
+
+    def _load_sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """One augmentable ``(image, mask)``: a native-scale tile crop under
+        tiling (resolving the flat tile index), else the whole composite."""
+        if self.tiling:
+            img_idx, y, x = self.tiles[idx]
+            image, mask = self._load_raw(img_idx)
+            return self._make_tile(image, mask, y, x)
+        return self._load_raw(idx)
+
     def __getitem__(self, idx: int):
-        image, mask = self._load_raw(idx)
+        image, mask = self._load_sample(idx)
 
         # CutMix FIRST, before the albumentations pipeline, so the mixed
         # image+mask is then augmented as one coherent sample.
@@ -306,8 +426,8 @@ class MatteDataset(Dataset):
             self.train and self.aug.cutmix
             and float(np.random.rand()) < self.aug.cutmix_p
         ):
-            j = int(np.random.randint(len(self.images)))
-            image_b, mask_b = self._load_raw(j)
+            j = int(np.random.randint(len(self)))
+            image_b, mask_b = self._load_sample(j)
             image, mask = cutmix_pair(image, mask, image_b, mask_b, self.aug.cutmix_alpha)
 
         out = self.transform(image=image, mask=mask)
@@ -327,8 +447,8 @@ def build_dataloaders(
     train_tf = build_transforms(cfg.aug, image_size, mean, std, train=True)
     val_tf = build_transforms(cfg.aug, image_size, mean, std, train=False)
 
-    train_ds = MatteDataset(Path(d.root) / d.train_csv, d, cfg.aug, train_tf, train=True)
-    val_ds = MatteDataset(Path(d.root) / d.val_csv, d, cfg.aug, val_tf, train=False)
+    train_ds = MatteDataset(Path(d.root) / d.train_csv, d, cfg.aug, train_tf, train=True, image_size=image_size)
+    val_ds = MatteDataset(Path(d.root) / d.val_csv, d, cfg.aug, val_tf, train=False, image_size=image_size)
 
     common = dict(
         num_workers=cfg.optim.num_workers,

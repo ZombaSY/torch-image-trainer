@@ -100,6 +100,20 @@ class DataConfig:
     # full dataset decodes to ~3 GB). Disable if the dataset outgrows memory.
     cache_in_memory: bool = True
 
+    # Tile decomposition (train AND val). When on, each image is covered by a
+    # grid of native-``image_size`` square tiles (evenly spaced, sharing
+    # ``tile_overlap`` px) instead of being pad-to-square'd and resized down —
+    # so the matte is learned/evaluated at the source resolution rather than a
+    # downscaled square. Every image expands into all its tiles (deterministic
+    # full coverage); ``pad_to_square`` is bypassed internally (tiles handle
+    # edges via padding). Default off so configs embedded in existing
+    # checkpoints/run snapshots reproduce unchanged. See dataset._tile_positions
+    # and MatteDataset. Train-time scale/position variety comes from the
+    # tile_scale_* aug knobs (AugConfig).
+    tiling: bool = False
+    # Pixels shared between neighbouring tiles (mirrors logo_matter's default).
+    tile_overlap: int = 20
+
 
 @dataclass
 class AugConfig:
@@ -166,6 +180,25 @@ class AugConfig:
     cutmix: bool = True
     cutmix_alpha: float = 1.0
     cutmix_p: float = 0.5
+
+    # --- tile scale/position jitter (train only; used only when data.tiling) --
+    # The tile grid pins content to the source image's native resolution, but
+    # real inputs arrive at arbitrary sizes — so each training tile is randomly
+    # rescaled/repositioned to cover that scale range. Aspect ratio is NEVER
+    # distorted: content is only ever isotropically ENLARGED (square->square
+    # upscale) or PADDED, never anamorphically stretched and never downscaled.
+
+    # Isotropic enlarge: sample s in [1.0, tile_scale_max]; crop a smaller square
+    # window (image_size / s) around the tile and let the resize tail upscale it
+    # to image_size, so the object appears larger (simulates a higher-res input).
+    # s == 1 -> exact native tile. min is fixed at 1.0 (no downscale).
+    tile_scale_jitter: bool = True
+    tile_scale_max: float = 2.0
+    tile_scale_jitter_p: float = 0.5
+    # Randomize where sub-image_size content sits inside the tile (translation +
+    # variable background padding, simulating a smaller/lower-res input); False
+    # center-pads like logo_matter's inference tiler. Val always center-pads.
+    tile_random_pad: bool = True
 
 
 @dataclass
@@ -284,6 +317,23 @@ class Config:
                 f"{self.head_name!r} needs model.decoder_channels divisible by 8 "
                 f"(got {self.model.decoder_channels})"
             )
+        if self.data.tiling:
+            if self.aug.random_crop:
+                raise ValueError(
+                    "data.tiling and aug.random_crop are mutually exclusive "
+                    "(both crop at image_size); the tile grid + tile_scale_* "
+                    "jitter subsume random_crop, so disable aug.random_crop."
+                )
+            if not 0 <= self.data.tile_overlap < self.image_size:
+                raise ValueError(
+                    f"data.tile_overlap must be in [0, image_size); got "
+                    f"{self.data.tile_overlap} (image_size={self.image_size})"
+                )
+            if self.aug.tile_scale_max < 1.0:
+                raise ValueError(
+                    "aug.tile_scale_max must be >= 1.0 (enlarge-only, no "
+                    f"downscale); got {self.aug.tile_scale_max}"
+                )
         if self.run.mode not in TRAIN_MODES:
             raise ValueError(f"Unknown mode {self.run.mode!r}; choose one of {TRAIN_MODES}")
         if self.optim.loss not in LOSSES:

@@ -60,7 +60,7 @@ def main() -> None:
     mean, std = _resolve_mean_std(cfg)
     size = cfg.image_size
     tf = build_transforms(cfg.aug, size, mean, std, train=True)
-    ds = MatteDataset(f"{cfg.data.root}/{cfg.data.train_csv}", cfg.data, cfg.aug, tf, train=True)
+    ds = MatteDataset(f"{cfg.data.root}/{cfg.data.train_csv}", cfg.data, cfg.aug, tf, train=True, image_size=size)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
