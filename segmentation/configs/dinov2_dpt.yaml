@@ -15,6 +15,8 @@ data:
   to_rgb: true
   unpremultiply_alpha: true   # straight-alpha data: set false if edges over-bright
   cache_in_memory: true       # preload all decoded images+mattes into RAM (~3 GB)
+  tiling: true                # decompose each image into native image_size tiles (train+val)
+  tile_overlap: 20            # px shared between neighbouring tiles
 
 aug:
   horizontal_flip: true
@@ -24,7 +26,7 @@ aug:
   rotate: true
   rotate_p: 0.5
   rotate_limit: 20
-  random_crop: true              # crop at model input size (native scale); pads smaller samples
+  random_crop: false             # subsumed by tiling grid + tile_scale_* jitter (mutually exclusive)
   random_crop_p: 0.5
   blur: true
   blur_p: 0.2
